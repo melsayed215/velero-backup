@@ -1,19 +1,21 @@
-# دليل تثبيت وربط Velero مع MinIO على Kubernetes (RKE2)
+# Installing Velero and Connecting It to MinIO on Kubernetes (RKE2)
 
-دليل مبسط لتثبيت Velero عبر Helm وربطه بـ MinIO كمكان تخزين للنسخ الاحتياطية، بالإضافة لعمل وتجربة Backup و Restore فعلي.
+A simple guide for installing Velero via Helm and connecting it to MinIO as backup storage, plus performing and testing an actual Backup and Restore.
 
----
-
-## المتطلبات
-
-- كلاستر Kubernetes شغال (تم الاختبار على RKE2)
-- Helm مثبت
-- MinIO شغال ومتاح (داخل الكلاستر أو خارجه) مع access key و secret key
-- صلاحيات `cluster-admin` على الكلاستر
+Once this setup is done, Velero can back up **any namespace or workload** in the cluster — not just the one used as an example here. Just swap `<namespace>` / `<backup-name>` in the commands below with whatever you want to back up (an app, a database, ArgoCD, an entire environment, etc.), and the same Backup/Restore flow applies.
 
 ---
 
-## 1. إنشاء ملف الـ Credentials الخاص بـ MinIO
+## Prerequisites
+
+- A running Kubernetes cluster (tested on RKE2)
+- Helm installed
+- MinIO running and reachable (in-cluster or external) with an access key and secret key
+- `cluster-admin` permissions on the cluster
+
+---
+
+## 1. Create the MinIO Credentials File
 
 ```bash
 cat > credentials-velero <<EOF
@@ -23,11 +25,11 @@ aws_secret_access_key=minio123
 EOF
 ```
 
-> استبدل `minio` و `minio123` ببيانات الدخول الفعلية لـ MinIO عندك.
+> Replace `minio` and `minio123` with your actual MinIO credentials.
 
 ---
 
-## 2. إنشاء الـ Namespace والـ Secret
+## 2. Create the Namespace and Secret
 
 ```bash
 kubectl create namespace velero
@@ -39,7 +41,7 @@ kubectl create secret generic cloud-credentials \
 
 ---
 
-## 3. إضافة مستودع Helm الخاص بـ Velero
+## 3. Add the Velero Helm Repository
 
 ```bash
 helm repo add vmware-tanzu https://vmware-tanzu.github.io/helm-charts
@@ -48,16 +50,16 @@ helm repo update
 
 ---
 
-## 4. ملف `values.yaml`
+## 4. `values.yaml` File
 
 ```yaml
 image:
   repository: velero/velero
-  tag: v1.18.2   # تأكد من توافق النسخة مع الـ chart المستخدم
+  tag: v1.18.2   # make sure this matches the chart's default Velero version
 
 initContainers:
   - name: velero-plugin-for-aws
-    image: velero/velero-plugin-for-aws:v1.12.1   # تأكد من توافقها مع نسخة Velero
+    image: velero/velero-plugin-for-aws:v1.12.1   # make sure it's compatible with the Velero version
     volumeMounts:
       - mountPath: /target
         name: plugins
@@ -74,19 +76,19 @@ configuration:
       config:
         region: minio
         s3ForcePathStyle: "true"
-        s3Url: http://<MINIO_IP>:9000   # عدّل الـ IP/URL الخاص بـ MinIO عندك
+        s3Url: http://<MINIO_IP>:9000   # set this to your MinIO URL/IP
 
-  volumeSnapshotLocation: []   # MinIO لا يدعم snapshot API أصلي
+  volumeSnapshotLocation: []   # MinIO has no native snapshot API
 
-deployNodeAgent: true   # لتفعيل نسخ بيانات الـ Persistent Volumes
+deployNodeAgent: true   # enables backing up Persistent Volume data
 snapshotsEnabled: false
 ```
 
-> ⚠️ **مهم:** تأكد أن نسخة `image.tag` و `velero-plugin-for-aws` متوافقة مع نسخة الـ chart الافتراضية (Chart v12.2.0 يجلب Velero v1.18.2 تلقائيًا). عدم التطابق يسبب فشل الحاوية عند بدء التشغيل (`unknown flag` errors).
+> ⚠️ **Important:** Make sure `image.tag` and `velero-plugin-for-aws` are compatible with the chart's default Velero version (Chart v12.2.0 pulls Velero v1.18.2 by default). A mismatch causes the container to crash on startup with `unknown flag` errors.
 
 ---
 
-## 5. تثبيت Velero عبر Helm
+## 5. Install Velero via Helm
 
 ```bash
 helm install velero vmware-tanzu/velero \
@@ -95,17 +97,17 @@ helm install velero vmware-tanzu/velero \
   -f values.yaml
 ```
 
-> استخدمنا `upgradeCRDs=false` لتجاوز مشكلة فشل الـ pre-install hook الخاص بتحديث الـ CRDs. إذا كانت هذه أول عملية تثبيت على الكلاستر، تأكد من تثبيت الـ CRDs يدويًا (خطوة 6).
+> `upgradeCRDs=false` is used here to bypass a failing pre-install hook that updates the CRDs. If this is the cluster's first-ever Velero install, make sure to install the CRDs manually (step 6).
 
 ---
 
-## 6. تثبيت الـ CRDs يدويًا (إذا لزم الأمر)
+## 6. Install CRDs Manually (if needed)
 
 ```bash
 kubectl get crds | grep velero.io
 ```
 
-إذا كانت النتيجة فارغة:
+If the result is empty:
 
 ```bash
 kubectl -n velero run velero-crds-install \
@@ -120,34 +122,34 @@ kubectl -n velero delete pod velero-crds-install --ignore-not-found
 
 ---
 
-## 7. إنشاء الـ Bucket في MinIO
+## 7. Create the Bucket in MinIO
 
-من خلال واجهة MinIO الرسومية (Console) على البورت `9001`:
+Using the MinIO web console (port `9001`):
 
-1. افتح `http://<MINIO_IP>:9001` وسجل الدخول ببيانات MinIO.
-2. من القائمة الجانبية اختر **Buckets**.
-3. اضغط **Create Bucket** واكتب الاسم `velero` (يجب أن يطابق الاسم في `values.yaml`).
-4. اضغط **Create**.
+1. Open `http://<MINIO_IP>:9001` and log in with your MinIO credentials.
+2. From the sidebar, select **Buckets**.
+3. Click **Create Bucket** and name it `velero` (must match the name in `values.yaml`).
+4. Click **Create**.
 
 ---
 
-## 8. التحقق من نجاح التثبيت
+## 8. Verify the Installation
 
 ```bash
 kubectl -n velero get pods
 ```
 
-يجب أن تكون كل الـ pods بحالة `Running` و `1/1` أو `2/2`.
+All pods should be `Running` and `1/1` (or `2/2`).
 
 ```bash
 kubectl -n velero get backupstoragelocation
 ```
 
-يجب أن يكون `PHASE` = `Available`.
+`PHASE` should be `Available`.
 
 ---
 
-## 9. تثبيت Velero CLI
+## 9. Install the Velero CLI
 
 ```bash
 wget https://github.com/vmware-tanzu/velero/releases/download/v1.18.2/velero-v1.18.2-linux-amd64.tar.gz
@@ -158,19 +160,19 @@ velero version
 
 ---
 
-## 10. عمل Backup
+## 10. Create a Backup
 
 ```bash
 velero backup create <backup-name> --include-namespaces=<namespace>
 ```
 
-مثال:
+Example:
 
 ```bash
 velero backup create argocd-backup --include-namespaces=argocd
 ```
 
-### متابعة الحالة
+### Check status
 
 ```bash
 velero backup get
@@ -178,17 +180,17 @@ velero backup describe <backup-name>
 velero backup logs <backup-name>
 ```
 
-يجب أن تكون `STATUS = Completed` مع `ERRORS = 0`.
+`STATUS` should be `Completed` with `ERRORS = 0`.
 
 ---
 
-## 11. عمل Restore
+## 11. Restore
 
-### استرجاع في نفس الـ namespace (بعد حذفه أو فقدانه)
+### Restore into the same namespace (after it's deleted or lost)
 
 ```bash
 kubectl delete namespace <namespace>
-# انتظر حتى يختفي تمامًا
+# wait until it's fully gone
 kubectl get namespace <namespace>
 ```
 
@@ -196,13 +198,13 @@ kubectl get namespace <namespace>
 velero restore create <restore-name> --from-backup <backup-name>
 ```
 
-مثال:
+Example:
 
 ```bash
 velero restore create argocd-restore --from-backup argocd-backup
 ```
 
-### استرجاع في namespace مختلف (اختبار بدون التأثير على النسخة الحالية)
+### Restore into a different namespace (test without affecting the current one)
 
 ```bash
 velero restore create <restore-name> \
@@ -210,7 +212,7 @@ velero restore create <restore-name> \
   --namespace-mappings <old-namespace>:<new-namespace>
 ```
 
-### متابعة الحالة
+### Check status
 
 ```bash
 velero restore describe <restore-name>
@@ -219,31 +221,31 @@ kubectl get all -n <namespace>
 
 ---
 
-## مشاكل شائعة وحلولها (Troubleshooting)
+## Common Issues and Fixes (Troubleshooting)
 
-| المشكلة | السبب | الحل |
+| Issue | Cause | Fix |
 |---|---|---|
-| `Job/velero-upgrade-crds not ready` | فشل الـ pre-install hook | استخدم `--set upgradeCRDs=false` وثبّت الـ CRDs يدويًا |
-| `cannot reuse a name that is still in use` | يوجد release قديم فاشل بنفس الاسم | `helm uninstall velero -n velero` قبل إعادة التثبيت |
-| `unknown flag: --repo-maintenance-job-configmap` | نسخة الصورة في `values.yaml` غير متوافقة مع نسخة الـ chart | وحّد نسخة `image.tag` مع نسخة Velero الافتراضية للـ chart |
-| `secret "cloud-credentials" not found` | الـ secret غير موجود أو انمسح | أعد إنشاءه بالأمر في الخطوة 2 |
-| Pods بحالة `Evicted` باستمرار | الـ node يعاني من `DiskPressure` (نفاد مساحة القرص) | كبّر الـ disk/partition، أو نظّف الصور واللوجز غير المستخدمة |
-| `NoSuchBucket` في حالة الـ BackupStorageLocation | الـ bucket غير موجود في MinIO | أنشئ الـ bucket بنفس الاسم المحدد في `values.yaml` |
+| `Job/velero-upgrade-crds not ready` | The pre-install hook failed | Use `--set upgradeCRDs=false` and install the CRDs manually |
+| `cannot reuse a name that is still in use` | An old failed release with the same name still exists | `helm uninstall velero -n velero` before reinstalling |
+| `unknown flag: --repo-maintenance-job-configmap` | The image version in `values.yaml` doesn't match the chart's Velero version | Align `image.tag` with the chart's default Velero version |
+| `secret "cloud-credentials" not found` | The secret is missing or was deleted | Recreate it using the command in step 2 |
+| Pods stuck in `Evicted` | The node has `DiskPressure` (disk space exhausted) | Grow the disk/partition, or clean up unused images and logs |
+| `NoSuchBucket` in the BackupStorageLocation status | The bucket doesn't exist in MinIO | Create the bucket with the exact name set in `values.yaml` |
 
 ---
 
-## ملخص سريع لبنية النظام
+## Quick Architecture Summary
 
-- **Velero (server + node-agent):** يعمل **داخل** الكلاستر، ومسؤول عن أخذ نسخ من موارد الكلاستر ورفعها.
-- **MinIO:** يعمل كمكان تخزين **خارجي** (S3-compatible) لحفظ بيانات النسخ الاحتياطية.
-- عند فقدان الكلاستر بالكامل، يمكن تثبيت Velero على كلاستر جديد وربطه بنفس bucket في MinIO لاسترجاع كل البيانات.
+- **Velero (server + node-agent):** runs **inside** the cluster and is responsible for taking snapshots of cluster resources and uploading them.
+- **MinIO:** acts as **external** (S3-compatible) storage for backup data.
+- If the entire cluster is lost, Velero can be installed on a new cluster and pointed at the same MinIO bucket to restore everything.
 
 ---
 
-## أوامر مرجعية سريعة
+## Quick Reference Commands
 
 ```bash
-# حالة كل شيء
+# Overall status
 kubectl -n velero get pods
 kubectl -n velero get backupstoragelocation
 
@@ -256,6 +258,6 @@ velero backup describe <name>
 velero restore create <name> --from-backup <backup-name>
 velero restore describe <name>
 
-# تحديث الإعدادات
+# Update configuration
 helm upgrade velero vmware-tanzu/velero -n velero --set upgradeCRDs=false -f values.yaml
 ```
